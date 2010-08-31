@@ -1,0 +1,194 @@
+A library for mocking PHP builtin functions.
+
+Copyright (c) 2010 Josh Adell <josh.adell@gmail.com>
+
+In unit tests, it is useful to be able to "pin" the results of normally indeterminate function calls (rand(), time(), 
+etc.)
+
+REQUIREMENTS:
+Use of this library relies on the PHP APD extension (http://php.net/manual/en/book.apd.php)
+
+USAGE:
+
+Example with rand():
+
+<code>
+require_once("BuiltinMock.php");
+
+$i = 4; // chosen by fair dice roll. guaranteed to be random.
+
+// Override rand() to always return our value.
+// The override() call returns a handle with which to call the
+// original function.
+$oMockRand = new BuiltinMock_Returner_SetValue($i);
+$sOriginal = BuiltinMock::override("rand", $oMockRand);
+
+$r = rand(); // $r = 4
+$r = rand(); // $r = 4
+$r = rand(); // $r = 4 ad infinitum
+
+$r = $sOriginal(); // $r = ? some random number
+
+// Restore rand() to its original glory
+BuiltinMock::restore("rand");
+$r = rand(); // $r = ?
+</code>
+
+Here's an example using PHPUnit:
+
+<code>
+class MyClass
+{
+    public function doSomeStuff()
+    {
+        // do some stuff that takes a while
+        $iReturnTime = time();
+
+        return array('time' => $iReturnTime, /* ...other return stuff... */);
+    }
+}
+
+class MyClassTest extends PHPUnit_Framework_TestCase
+{
+    public function testDoSomeStuff_ThisMayTakeAWhile_ReturnsCorrecTime()
+    {
+        // set up the test
+        $oClass = new MyClass();
+        $aExpected = array('time' => time(), /* ...other expected stuff... */);
+
+        $aReturn = $oClass->doSomeStuff();
+        self::assertEquals($aExpected, $aResult);
+    }
+}
+</code>
+
+This test is brittle because the time we expect in the test may not match the time returned by the method.  Luckily, all we care 
+about here is that we got some time, and that it came from the time() call.  Using BuiltinMock, we can treat time() as an external 
+component and mock it:
+
+<code>
+class MyClassTest extends PHPUnit_Framework_TestCase
+{
+    public function teardown()
+    {
+        // make sure other tests/suites don't use our mock
+        BuiltinMock::restore('time');
+    }
+
+    public function testDoSomeStuff_ThisMayTakeAWhile_ReturnsCorrecTime()
+    {
+        $iTimestamp = time();
+        BuiltinMock::override('time', new BuiltinMock_Returner_SetValue($iTimestamp));
+
+        // set up the test
+        $oClass = new MyClass();
+        $aExpected = array('time' => time(), /* ...other expected stuff... */);
+
+        $aReturn = $oClass->doSomeStuff();
+        self::assertEquals($aExpected, $aResult);
+    }
+}
+</code>
+
+BuiltinMocks can be combined with PHPUnit mocks to test that builtin functions are called with the correct parameters.
+
+class AnotherClass 
+{ 
+    public function doSomeStuff() 
+    { 
+        $sFormat = 'Y-m-d H:i:s'; 
+        $iTimestamp = 1234; 
+        $iReturnTime = date($sFormat, $iTimestamp); 
+    } 
+} 
+ 
+class AnotherClassTest extends PHPUnit_Framework_TestCase 
+{ 
+    public function teardown() 
+    { 
+        BuiltinMock::restore('date'); 
+    } 
+ 
+    public function testDoSomeStuff_DateCalled_CalledWithCorrectParameters() 
+    { 
+        // Note that the method we are mocking is called 'mock', not 'date' and the params are wrapped in an array. 
+        // This is due to the internal workings of the BuiltinMock library. 
+        // Also note that the call to override() must happen before we set up the 
+        // mock expectations if we wish to use the original function's output in the return value.  
+        $oMockDate = $this->getMock('BuiltinMock_Returner_SetValue', array('mock')); 
+        $sOriginalDate = BuiltinMock::override('date', $oMockDate); 
+ 
+        $oMockDate->expected($this->once()) 
+            ->method('mock') 
+            ->with(array('Y-m-d H:i:s', 1234)) 
+            ->will($this->returnValue($sOriginalDate('Y-m-d H:i:s', 1234))); 
+ 
+        $oClass->doSomeStuff(); 
+    } 
+} 
+
+BuiltinMock comes with several ready-made overrides:
+
+* BuiltinMock_Returner_SetValue($mValue)
+    returns $mValue on every call
+
+* BuiltinMock_Returner_Increment($iValue, $iStep=1)
+    returns $iValue and increments $iValue on every call
+
+* BuilinMock_Returner_Queue($aValue)
+    returns the next element in $aValues on every call
+    returns the last value in $aValues on every call once the end of $aValues is reached
+
+* BuiltinMock_Date_UseTime
+    always use time() as the default second parameter
+    useful if mocking time() and date() is used without the second parameter
+
+* BuiltinMock_Strtotime_UseTime
+    same as above
+
+* BuiltinMock_Mktime_UseTime
+    uses time() to fill in the optional parameters
+
+New mocks can easily be created for specific purposes by extending BuiltinMock_Function:
+
+<code>
+class BuiltinMock_Rand_Multiplier extends BuiltinMock_Function 
+{ 
+    protected $iMultiplier 
+ 
+    public function __construct($iMultiplier) 
+    { 
+        $this->iMultiplier = $iMultiplier; 
+    } 
+ 
+    /**
+     * Returns random number multiplied by given multiplier
+     * Note that the args are passed in as an array.
+     *
+     * @param integer $iLowerBound
+     * @param integer $iUpperBound
+     * @return integer
+     */ 
+    public function mock($aArgs) 
+    { 
+        $iLower = $aArgs[0]; 
+        $iUpper = $aArgs[1]; 
+ 
+        $aNewArgs = array( 
+            $iLower * $this->iMultiplier, 
+            $iUpper * $this->iMultiplier, 
+        ); 
+ 
+        return $this->callOriginal($aNewArgs); 
+    } 
+} 
+ 
+BuiltinMock::override('rand', BuiltinMock_Rand_Multiplier(5)); 
+$iRand = rand(1,4);  // will be between 5 and 20 
+</code>
+
+
+NOTES:
+
+BuiltinMock does not include an autoloader.
+BuiltinMock requires the APD extension.
